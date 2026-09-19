@@ -56,7 +56,7 @@
 </head>
 <body>
 
-<h1>NS Vertrektijden — met materieeltype <span style="font-size:11px;color:var(--muted);font-weight:400;">v15 (gepland vs actueel materieel)</span></h1>
+<h1>NS Vertrektijden — met materieeltype <span style="font-size:11px;color:var(--muted);font-weight:400;">v16 (treinposities-link gefixt)</span></h1>
 
 <div class="row">
   <span class="station-wrap" style="flex:1;min-width:220px;">
@@ -381,7 +381,7 @@ function renderRow(dep){
             const label = stock.numberOfUnits > 1 ? `eenheid ${i+1}` : 'eenheid';
             const num = p.stockIdentifier && p.stockIdentifier !== '0' ? p.stockIdentifier : null;
             const thumb = p.image ? `<img src="${escapeHtml(p.image)}" alt="" style="display:block;max-width:100%;border-radius:4px;margin-bottom:2px;">` : '';
-            line.innerHTML = `${thumb}${label}${num ? ' — matnr. <a href="https://www.treinposities.nl/materieel.php?id=' + encodeURIComponent(num) + '" target="_blank" rel="noopener">' + escapeHtml(num) + '</a>' : ''}${facs ? ': ' + escapeHtml(facs) : ''}`;
+            line.innerHTML = `${thumb}${label}${num ? ' — matnr. <a href="https://treinposities.nl/voertuig/ns_' + encodeURIComponent(num) + '" target="_blank" rel="noopener">' + escapeHtml(num) + '</a>' : ''}${facs ? ': ' + escapeHtml(facs) : ''}`;
             partsWrap.appendChild(line);
           });
           cell.appendChild(partsWrap);
