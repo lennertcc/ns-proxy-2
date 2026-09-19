@@ -56,7 +56,7 @@
 </head>
 <body>
 
-<h1>NS Vertrektijden — met materieeltype <span style="font-size:11px;color:var(--muted);font-weight:400;">v8 (copy + vertalingen + model)</span></h1>
+<h1>NS Vertrektijden — met materieeltype <span style="font-size:11px;color:var(--muted);font-weight:400;">v9 (per-bak faciliteiten, drukte, juiste stop)</span></h1>
 
 <div class="row">
   <span class="station-wrap" style="flex:1;min-width:220px;">
@@ -196,7 +196,18 @@ function describeCategory(dep){
   return '?';
 }
 
-function copyButton(getText){
+const FACILITY_NAMES = {
+  'FIETS': '🚲 fietsenrek',
+  'TOILET': '🚻 toilet',
+  'TOEGANKELIJK': '♿ rolstoeltoegankelijk',
+  'STILTE': '🤫 stiltecoupé',
+  'eerste_klas': '1e klas',
+  'FIRST_CLASS': '1e klas',
+};
+function describeFacility(f){ return FACILITY_NAMES[f] || f; }
+
+const CROWD_NAMES = { LOW: 'rustig', MEDIUM: 'gemiddeld', HIGH: 'druk', UNKNOWN: 'onbekend' };
+function describeCrowd(c){ return CROWD_NAMES[c] || c; }
   const btn = document.createElement('button');
   btn.className = 'secondary copy-btn';
   btn.type = 'button';
@@ -214,13 +225,21 @@ function copyButton(getText){
   return btn;
 }
 
-async function fetchStock(trainNumber, plannedDateTime){
+async function fetchStock(trainNumber, plannedDateTime, stationCode){
   const dt = encodeURIComponent(plannedDateTime.slice(0,10));
   const path = `/api/v2/journey?train=${encodeURIComponent(trainNumber)}&dateTime=${dt}`;
   const data = await nsFetch(path);
   const stops = data.payload?.stops || [];
-  const stopWithStock = stops.find(s => s.actualStock || s.plannedStock);
-  const stock = stopWithStock?.actualStock || stopWithStock?.plannedStock;
+
+  let matchedStop = null;
+  const idx = await ensureStationIndex().catch(() => null);
+  const uic = idx?.[stationCode?.toLowerCase()]?.uicCode;
+  if(uic) matchedStop = stops.find(s => s.stop?.uicCode === uic);
+  if(!matchedStop) matchedStop = stops.find(s => s.actualStock || s.plannedStock);
+
+  const stock = matchedStop?.actualStock || matchedStop?.plannedStock;
+  const departureHere = matchedStop?.departures?.[0];
+
   if(!stock) return { stock: null, raw: data };
   return {
     stock: {
@@ -228,9 +247,11 @@ async function fetchStock(trainNumber, plannedDateTime){
       numberOfParts: stock.numberOfParts,
       numberOfSeats: stock.numberOfSeats,
       hasSignificantChange: stock.hasSignificantChange,
+      crowdForecast: departureHere?.crowdForecast,
       parts: (stock.trainParts || []).map(p => ({
         stockIdentifier: p.stockIdentifier,
-        facilities: p.facilities || []
+        facilities: p.facilities || [],
+        image: p.image?.uri
       }))
     },
     raw: data
@@ -263,7 +284,8 @@ function renderRow(dep){
     btn.disabled = true;
     cell.innerHTML = '<span class="spin"></span>';
     try {
-      const { stock, raw } = await fetchStock(btn.dataset.num, btn.dataset.dt);
+      const stationCode = getStationCode();
+      const { stock, raw } = await fetchStock(btn.dataset.num, btn.dataset.dt, stationCode);
       cell.innerHTML = '';
       if(stock){
         const typeLine = document.createElement('div');
@@ -276,15 +298,22 @@ function renderRow(dep){
         const bits = [];
         if(stock.numberOfParts) bits.push(`${stock.numberOfParts} bak(ken)`);
         if(stock.numberOfSeats) bits.push(`${stock.numberOfSeats} zitplaatsen`);
-        if(stock.hasSignificantChange) bits.push('materieel wijkt af van gepland');
+        if(stock.crowdForecast) bits.push(`drukte: ${describeCrowd(stock.crowdForecast)}`);
+        if(stock.hasSignificantChange) bits.push('⚠ materieel wijkt af van gepland');
         meta.textContent = bits.join(' · ');
         cell.appendChild(meta);
 
         if(stock.parts.length){
-          const partsLine = document.createElement('div');
-          partsLine.className = 'stock-parts';
-          partsLine.textContent = 'materieelnummers: ' + stock.parts.map(p => p.stockIdentifier).filter(Boolean).join(', ');
-          cell.appendChild(partsLine);
+          const partsWrap = document.createElement('div');
+          partsWrap.className = 'stock-parts';
+          partsWrap.style.marginTop = '4px';
+          stock.parts.forEach((p, i) => {
+            const line = document.createElement('div');
+            const facs = p.facilities.map(describeFacility).join(', ');
+            line.innerHTML = `bak ${i+1}${p.stockIdentifier && p.stockIdentifier !== '0' ? ' (nr. ' + escapeHtml(p.stockIdentifier) + ')' : ''}${facs ? ': ' + escapeHtml(facs) : ''}`;
+            partsWrap.appendChild(line);
+          });
+          cell.appendChild(partsWrap);
         }
 
         const details = document.createElement('details');
