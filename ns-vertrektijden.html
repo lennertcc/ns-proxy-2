@@ -56,7 +56,7 @@
 </head>
 <body>
 
-<h1>NS Vertrektijden — met materieeltype <span style="font-size:11px;color:var(--muted);font-weight:400;">v10 (syntax-fix copyButton)</span></h1>
+<h1>NS Vertrektijden — met materieeltype <span style="font-size:11px;color:var(--muted);font-weight:400;">v11 (exact model: type-bakken, matnr link)</span></h1>
 
 <div class="row">
   <span class="station-wrap" style="flex:1;min-width:220px;">
@@ -175,10 +175,11 @@ const STOCK_TYPES = [
   ['FLIRT', 'Fast Light Innovative Regional Train'],
   ['TRAXX', 'Bombardier TRAXX locomotief'],
 ];
-function describeStockType(trainType){
+function describeStockType(trainType, perUnitParts){
   if(!trainType) return null;
+  const model = perUnitParts ? `${trainType}-${perUnitParts}` : trainType;
   const hit = STOCK_TYPES.find(([code]) => trainType.toUpperCase().startsWith(code));
-  return hit ? `${trainType} — ${hit[1]}` : trainType;
+  return hit ? `${model} — ${hit[1]}` : model;
 }
 
 // Common NS product-category abbreviations, in case longCategoryName is missing
@@ -243,14 +244,18 @@ async function fetchStock(trainNumber, plannedDateTime, stationCode){
   const departureHere = matchedStop?.departures?.[0];
 
   if(!stock) return { stock: null, raw: data };
+  const units = stock.trainParts || [];
+  const perUnitParts = units.length ? Math.round((stock.numberOfParts || 0) / units.length) : null;
   return {
     stock: {
       trainType: stock.trainType,
       numberOfParts: stock.numberOfParts,
+      perUnitParts,
+      numberOfUnits: units.length,
       numberOfSeats: stock.numberOfSeats,
       hasSignificantChange: stock.hasSignificantChange,
       crowdForecast: departureHere?.crowdForecast,
-      parts: (stock.trainParts || []).map(p => ({
+      parts: units.map(p => ({
         stockIdentifier: p.stockIdentifier,
         facilities: p.facilities || [],
         image: p.image?.uri
@@ -292,13 +297,14 @@ function renderRow(dep){
       if(stock){
         const typeLine = document.createElement('div');
         typeLine.className = 'stock-line';
-        typeLine.innerHTML = `<b>${escapeHtml(describeStockType(stock.trainType) || 'onbekend type')}</b>`;
+        typeLine.innerHTML = `<b>${escapeHtml(describeStockType(stock.trainType, stock.perUnitParts) || 'onbekend type')}</b>`;
         cell.appendChild(typeLine);
 
         const meta = document.createElement('div');
         meta.className = 'stock-parts';
         const bits = [];
-        if(stock.numberOfParts) bits.push(`${stock.numberOfParts} bak(ken)`);
+        if(stock.numberOfUnits > 1) bits.push(`${stock.numberOfUnits} eenheden gekoppeld`);
+        if(stock.numberOfParts) bits.push(`${stock.numberOfParts} bakken totaal`);
         if(stock.numberOfSeats) bits.push(`${stock.numberOfSeats} zitplaatsen`);
         if(stock.crowdForecast) bits.push(`drukte: ${describeCrowd(stock.crowdForecast)}`);
         if(stock.hasSignificantChange) bits.push('⚠ materieel wijkt af van gepland');
@@ -312,7 +318,9 @@ function renderRow(dep){
           stock.parts.forEach((p, i) => {
             const line = document.createElement('div');
             const facs = p.facilities.map(describeFacility).join(', ');
-            line.innerHTML = `bak ${i+1}${p.stockIdentifier && p.stockIdentifier !== '0' ? ' (nr. ' + escapeHtml(p.stockIdentifier) + ')' : ''}${facs ? ': ' + escapeHtml(facs) : ''}`;
+            const label = stock.numberOfUnits > 1 ? `eenheid ${i+1}` : 'eenheid';
+            const num = p.stockIdentifier && p.stockIdentifier !== '0' ? p.stockIdentifier : null;
+            line.innerHTML = `${label}${num ? ' — matnr. <a href="https://www.treinposities.nl/materieel.php?id=' + encodeURIComponent(num) + '" target="_blank" rel="noopener">' + escapeHtml(num) + '</a>' : ''}${facs ? ': ' + escapeHtml(facs) : ''}`;
             partsWrap.appendChild(line);
           });
           cell.appendChild(partsWrap);
