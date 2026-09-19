@@ -56,7 +56,7 @@
 </head>
 <body>
 
-<h1>NS Vertrektijden — met materieeltype <span style="font-size:11px;color:var(--muted);font-weight:400;">v14 (koppelen/ontkoppelen op vertrekstation)</span></h1>
+<h1>NS Vertrektijden — met materieeltype <span style="font-size:11px;color:var(--muted);font-weight:400;">v15 (gepland vs actueel materieel)</span></h1>
 
 <div class="row">
   <span class="station-wrap" style="flex:1;min-width:220px;">
@@ -240,12 +240,28 @@ async function fetchStock(trainNumber, plannedDateTime, stationCode){
   if(uic) matchedStop = stops.find(s => s.stop?.uicCode === uic);
   if(!matchedStop) matchedStop = stops.find(s => s.actualStock || s.plannedStock);
 
-  const stock = matchedStop?.actualStock || matchedStop?.plannedStock;
+  const actual = matchedStop?.actualStock;
+  const planned = matchedStop?.plannedStock;
+  const stock = actual || planned;
   const departureHere = matchedStop?.departures?.[0];
 
   if(!stock) return { stock: null, raw: data };
   const units = stock.trainParts || [];
   const perUnitParts = units.length ? Math.round((stock.numberOfParts || 0) / units.length) : null;
+
+  let planVsActual = null;
+  if(actual && planned){
+    const aType = actual.trainType, pType = planned.trainType;
+    const aParts = actual.numberOfParts, pParts = planned.numberOfParts;
+    const aIds = JSON.stringify((actual.trainParts || []).map(p => p.stockIdentifier).sort());
+    const pIds = JSON.stringify((planned.trainParts || []).map(p => p.stockIdentifier).sort());
+    if(aType !== pType || aParts !== pParts || aIds !== pIds){
+      planVsActual = {
+        plannedType: pType, plannedParts: pParts,
+        actualType: aType, actualParts: aParts
+      };
+    }
+  }
 
   let couplingChange = null;
   const arrIds = matchedStop?.arrivals?.[0]?.stockIdentifiers;
@@ -269,6 +285,7 @@ async function fetchStock(trainNumber, plannedDateTime, stationCode){
       hasSignificantChange: stock.hasSignificantChange,
       crowdForecast: departureHere?.crowdForecast,
       couplingChange,
+      planVsActual,
       parts: units.map(p => ({
         stockIdentifier: p.stockIdentifier,
         facilities: p.facilities || [],
@@ -330,6 +347,19 @@ function renderRow(dep){
           cell.appendChild(ccLine);
         }
 
+        if(stock.planVsActual){
+          const pva = stock.planVsActual;
+          const pvaLine = document.createElement('div');
+          pvaLine.style.color = 'var(--err)';
+          pvaLine.style.fontWeight = '600';
+          pvaLine.style.fontSize = '12px';
+          pvaLine.style.margin = '2px 0';
+          const plannedLabel = describeStockType(pva.plannedType, pva.plannedParts) || 'onbekend';
+          const actualLabel = describeStockType(pva.actualType, pva.actualParts) || 'onbekend';
+          pvaLine.textContent = `⚠ afwijkend van gepland: was ${plannedLabel}, nu ${actualLabel}`;
+          cell.appendChild(pvaLine);
+        }
+
         const meta = document.createElement('div');
         meta.className = 'stock-parts';
         const bits = [];
@@ -337,7 +367,6 @@ function renderRow(dep){
         if(stock.numberOfParts) bits.push(`${stock.numberOfParts} bakken totaal`);
         if(stock.numberOfSeats) bits.push(`${stock.numberOfSeats} zitplaatsen`);
         if(stock.crowdForecast) bits.push(`drukte: ${describeCrowd(stock.crowdForecast)}`);
-        if(stock.hasSignificantChange) bits.push('⚠ materieel wijkt af van gepland');
         meta.textContent = bits.join(' · ');
         cell.appendChild(meta);
 
