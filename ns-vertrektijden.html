@@ -55,7 +55,7 @@
 </head>
 <body>
 
-<h1>NS Vertrektijden — met materieeltype <span style="font-size:11px;color:var(--muted);font-weight:400;">v6 (v2/departures fix)</span></h1>
+<h1>NS Vertrektijden — met materieeltype <span style="font-size:11px;color:var(--muted);font-weight:400;">v7 (v2/journey materieel)</span></h1>
 
 <div class="row">
   <span class="station-wrap" style="flex:1;min-width:220px;">
@@ -156,45 +156,23 @@ function fmtTime(iso){
   return d.toLocaleTimeString('nl-NL', {hour:'2-digit', minute:'2-digit'});
 }
 
-// Walk an unknown response shape looking for rolling-stock info.
-// Returns {trainType, parts:[stockIdentifier...]} or null.
-function extractStock(obj, trainNumber){
-  let found = null;
-  function walk(node){
-    if(found || !node || typeof node !== 'object') return;
-    if(Array.isArray(node)){ node.forEach(walk); return; }
-    const keys = Object.keys(node);
-    for(const k of keys){
-      const lk = k.toLowerCase();
-      if((lk === 'actualstock' || lk === 'plannedstock' || lk === 'materieel') && node[k]){
-        const stock = node[k];
-        const trainType = stock.trainType || stock.type || stock.materieelType;
-        let parts = [];
-        const partsArr = stock.trainParts || stock.materieeldelen || stock.parts;
-        if(Array.isArray(partsArr)){
-          parts = partsArr.map(p => p.stockIdentifier || p.materieelnummer || p.identifier).filter(Boolean);
-        }
-        if(trainType || parts.length){
-          found = { trainType, parts };
-          return;
-        }
-      }
-    }
-    for(const k of keys) walk(node[k]);
-  }
-  walk(obj);
-  return found;
-}
+// (removed: extractStock — v2/journey response has a fixed, known Stock schema)
 
-async function fetchStock(trainNumber, plannedDateTime, stationCode){
-  const idx = await ensureStationIndex();
-  const st = idx[stationCode.toLowerCase()];
-  if(!st || !st.uicCode) throw new Error('UIC-code van station niet gevonden');
-  const dt = encodeURIComponent(plannedDateTime);
-  const path = `/api/v3/trips?originUicCode=${st.uicCode}&trainNumber=${trainNumber}&dateTime=${dt}`;
+async function fetchStock(trainNumber, plannedDateTime){
+  const dt = encodeURIComponent(plannedDateTime.slice(0,10));
+  const path = `/api/v2/journey?train=${encodeURIComponent(trainNumber)}&dateTime=${dt}`;
   const data = await nsFetch(path);
-  const stock = extractStock(data, trainNumber);
-  return { stock, raw: data };
+  const stops = data.payload?.stops || [];
+  const stopWithStock = stops.find(s => s.actualStock || s.plannedStock);
+  const stock = stopWithStock?.actualStock || stopWithStock?.plannedStock;
+  if(!stock) return { stock: null, raw: data };
+  return {
+    stock: {
+      trainType: stock.trainType,
+      parts: (stock.trainParts || []).map(p => p.stockIdentifier).filter(Boolean)
+    },
+    raw: data
+  };
 }
 
 function renderRow(dep){
@@ -223,8 +201,7 @@ function renderRow(dep){
     btn.disabled = true;
     cell.innerHTML = '<span class="spin"></span>';
     try {
-      const stationCode = getStationCode();
-      const { stock, raw } = await fetchStock(btn.dataset.num, btn.dataset.dt, stationCode);
+      const { stock, raw } = await fetchStock(btn.dataset.num, btn.dataset.dt);
       if(stock){
         cell.innerHTML = `
           <div class="stock-line"><b>${stock.trainType || 'onbekend type'}</b></div>
