@@ -56,7 +56,7 @@
 </head>
 <body>
 
-<h1>NS Vertrektijden — met materieeltype <span style="font-size:11px;color:var(--muted);font-weight:400;">v13 (geen dubbele foto)</span></h1>
+<h1>NS Vertrektijden — met materieeltype <span style="font-size:11px;color:var(--muted);font-weight:400;">v14 (koppelen/ontkoppelen op vertrekstation)</span></h1>
 
 <div class="row">
   <span class="station-wrap" style="flex:1;min-width:220px;">
@@ -246,6 +246,19 @@ async function fetchStock(trainNumber, plannedDateTime, stationCode){
   if(!stock) return { stock: null, raw: data };
   const units = stock.trainParts || [];
   const perUnitParts = units.length ? Math.round((stock.numberOfParts || 0) / units.length) : null;
+
+  let couplingChange = null;
+  const arrIds = matchedStop?.arrivals?.[0]?.stockIdentifiers;
+  const depIds = matchedStop?.departures?.[0]?.stockIdentifiers;
+  if(matchedStop?.status === 'ORIGIN'){
+    couplingChange = null; // trein begint hier, niets om te vergelijken
+  } else if(Array.isArray(arrIds) && Array.isArray(depIds)){
+    if(depIds.length > arrIds.length) couplingChange = { type: 'coupled', from: arrIds.length, to: depIds.length };
+    else if(depIds.length < arrIds.length) couplingChange = { type: 'decoupled', from: arrIds.length, to: depIds.length };
+    else if(JSON.stringify([...arrIds].sort()) !== JSON.stringify([...depIds].sort())) couplingChange = { type: 'swapped', from: arrIds.length, to: depIds.length };
+    else couplingChange = { type: 'none', from: arrIds.length, to: depIds.length };
+  }
+
   return {
     stock: {
       trainType: stock.trainType,
@@ -255,6 +268,7 @@ async function fetchStock(trainNumber, plannedDateTime, stationCode){
       numberOfSeats: stock.numberOfSeats,
       hasSignificantChange: stock.hasSignificantChange,
       crowdForecast: departureHere?.crowdForecast,
+      couplingChange,
       parts: units.map(p => ({
         stockIdentifier: p.stockIdentifier,
         facilities: p.facilities || [],
@@ -299,6 +313,22 @@ function renderRow(dep){
         typeLine.className = 'stock-line';
         typeLine.innerHTML = `<b>${escapeHtml(describeStockType(stock.trainType, stock.perUnitParts) || 'onbekend type')}</b>`;
         cell.appendChild(typeLine);
+
+        if(stock.couplingChange && stock.couplingChange.type !== 'none'){
+          const cc = stock.couplingChange;
+          const ccLine = document.createElement('div');
+          ccLine.style.color = 'var(--accent)';
+          ccLine.style.fontWeight = '600';
+          ccLine.style.fontSize = '12px';
+          ccLine.style.margin = '2px 0';
+          const label = {
+            coupled: `🔗 op dit station wordt een eenheid gekoppeld (${cc.from} → ${cc.to})`,
+            decoupled: `✂️ op dit station wordt een eenheid ontkoppeld (${cc.from} → ${cc.to})`,
+            swapped: `🔁 samenstelling wijzigt op dit station`
+          }[cc.type];
+          ccLine.textContent = label;
+          cell.appendChild(ccLine);
+        }
 
         const meta = document.createElement('div');
         meta.className = 'stock-parts';
