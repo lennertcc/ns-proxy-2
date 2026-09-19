@@ -1,5 +1,5 @@
 {
   "name": "ns-proxy",
-  "main": "src/index.js",
+  "main": "worker.js",
   "compatibility_date": "2026-09-19"
 }
