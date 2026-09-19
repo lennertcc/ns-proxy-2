@@ -45,6 +45,7 @@
   .stock-parts{color:var(--muted);font-size:12px;}
   details.raw{margin-top:4px;}
   details.raw summary{cursor:pointer;color:var(--muted);font-size:11px;}
+  .copy-btn{font-size:11px;padding:3px 8px;margin-top:4px;}
   pre{white-space:pre-wrap;font-size:11px;background:#0b0d11;padding:8px;border-radius:6px;max-height:200px;overflow:auto;}
   .spin{display:inline-block;width:12px;height:12px;border:2px solid var(--muted);
         border-top-color:var(--accent);border-radius:50%;animation:s .7s linear infinite;}
@@ -55,7 +56,7 @@
 </head>
 <body>
 
-<h1>NS Vertrektijden — met materieeltype <span style="font-size:11px;color:var(--muted);font-weight:400;">v7 (v2/journey materieel)</span></h1>
+<h1>NS Vertrektijden — met materieeltype <span style="font-size:11px;color:var(--muted);font-weight:400;">v8 (copy + vertalingen + model)</span></h1>
 
 <div class="row">
   <span class="station-wrap" style="flex:1;min-width:220px;">
@@ -68,6 +69,7 @@
     <div id="stationDropdown"></div>
   </span>
   <button id="loadBtn">Ophalen</button>
+  <button id="copyDeparturesBtn" class="secondary" type="button" style="display:none">Kopieer JSON</button>
   <button id="autoBtn" class="secondary">Auto-refresh: uit</button>
 </div>
 <div id="status"></div>
@@ -156,7 +158,61 @@ function fmtTime(iso){
   return d.toLocaleTimeString('nl-NL', {hour:'2-digit', minute:'2-digit'});
 }
 
-// (removed: extractStock — v2/journey response has a fixed, known Stock schema)
+// Dutch rolling-stock type abbreviations -> full name
+const STOCK_TYPES = [
+  ['SLT', 'Sprinter Lighttrain'],
+  ['SNG', 'Sprinter Nieuwe Generatie'],
+  ['SGMM', 'Sprinter Stadsgewestelijk Materieel (Plan V)'],
+  ['SGM', 'Sprinter Stadsgewestelijk Materieel (Plan V)'],
+  ['DDZ', 'Dubbeldeks Sprinter'],
+  ['VIRM', 'Verlengd InterRegio Materieel (dubbeldekker)'],
+  ['ICM', 'InterCityMaterieel ("Koploper")'],
+  ['ICR', 'InterCityRijtuigen'],
+  ['ICNG', 'Intercity Nieuwe Generatie'],
+  ["DM'90", 'Dieselmaterieel 1990'],
+  ['IRM', 'InterRegio Materieel'],
+  ['ICE', 'InterCityExpress (Duitsland)'],
+  ['FLIRT', 'Fast Light Innovative Regional Train'],
+  ['TRAXX', 'Bombardier TRAXX locomotief'],
+];
+function describeStockType(trainType){
+  if(!trainType) return null;
+  const hit = STOCK_TYPES.find(([code]) => trainType.toUpperCase().startsWith(code));
+  return hit ? `${trainType} — ${hit[1]}` : trainType;
+}
+
+// Common NS product-category abbreviations, in case longCategoryName is missing
+const CATEGORY_NAMES = {
+  'IC': 'Intercity', 'SPR': 'Sprinter', 'ICD': 'Intercity direct',
+  'THA': 'Thalys/Eurostar', 'ICE': 'ICE International', 'EUR': 'Eurostar',
+  'NST': 'Nachtnettrein', 'S': 'Stoptrein'
+};
+function describeCategory(dep){
+  const long = dep.product?.longCategoryName;
+  const short = dep.product?.shortCategoryName || dep.trainCategory;
+  if(long && short && long !== short) return `${short} · ${long}`;
+  if(long) return long;
+  if(short) return CATEGORY_NAMES[short] ? `${short} · ${CATEGORY_NAMES[short]}` : short;
+  return '?';
+}
+
+function copyButton(getText){
+  const btn = document.createElement('button');
+  btn.className = 'secondary copy-btn';
+  btn.type = 'button';
+  btn.textContent = 'Kopieer';
+  btn.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    try {
+      await navigator.clipboard.writeText(getText());
+      btn.textContent = 'Gekopieerd!';
+    } catch {
+      btn.textContent = 'Kopiëren mislukt';
+    }
+    setTimeout(() => btn.textContent = 'Kopieer', 1500);
+  });
+  return btn;
+}
 
 async function fetchStock(trainNumber, plannedDateTime){
   const dt = encodeURIComponent(plannedDateTime.slice(0,10));
@@ -169,7 +225,13 @@ async function fetchStock(trainNumber, plannedDateTime){
   return {
     stock: {
       trainType: stock.trainType,
-      parts: (stock.trainParts || []).map(p => p.stockIdentifier).filter(Boolean)
+      numberOfParts: stock.numberOfParts,
+      numberOfSeats: stock.numberOfSeats,
+      hasSignificantChange: stock.hasSignificantChange,
+      parts: (stock.trainParts || []).map(p => ({
+        stockIdentifier: p.stockIdentifier,
+        facilities: p.facilities || []
+      }))
     },
     raw: data
   };
@@ -183,7 +245,7 @@ function renderRow(dep){
   const delayed = dep.actualDateTime && dep.plannedDateTime &&
                   new Date(dep.actualDateTime) - new Date(dep.plannedDateTime) > 60000;
 
-  const cat = dep.product?.shortCategoryName || dep.product?.longCategoryName || dep.trainCategory || '?';
+  const cat = describeCategory(dep);
   const trainNumber = dep.product?.number || dep.name || '';
 
   tr.innerHTML = `
@@ -202,17 +264,55 @@ function renderRow(dep){
     cell.innerHTML = '<span class="spin"></span>';
     try {
       const { stock, raw } = await fetchStock(btn.dataset.num, btn.dataset.dt);
+      cell.innerHTML = '';
       if(stock){
-        cell.innerHTML = `
-          <div class="stock-line"><b>${stock.trainType || 'onbekend type'}</b></div>
-          <div class="stock-parts">${stock.parts.length ? 'bakken: ' + stock.parts.join(', ') : ''}</div>
-          <details class="raw"><summary>raw</summary><pre>${escapeHtml(JSON.stringify(raw, null, 1))}</pre></details>
-        `;
+        const typeLine = document.createElement('div');
+        typeLine.className = 'stock-line';
+        typeLine.innerHTML = `<b>${escapeHtml(describeStockType(stock.trainType) || 'onbekend type')}</b>`;
+        cell.appendChild(typeLine);
+
+        const meta = document.createElement('div');
+        meta.className = 'stock-parts';
+        const bits = [];
+        if(stock.numberOfParts) bits.push(`${stock.numberOfParts} bak(ken)`);
+        if(stock.numberOfSeats) bits.push(`${stock.numberOfSeats} zitplaatsen`);
+        if(stock.hasSignificantChange) bits.push('materieel wijkt af van gepland');
+        meta.textContent = bits.join(' · ');
+        cell.appendChild(meta);
+
+        if(stock.parts.length){
+          const partsLine = document.createElement('div');
+          partsLine.className = 'stock-parts';
+          partsLine.textContent = 'materieelnummers: ' + stock.parts.map(p => p.stockIdentifier).filter(Boolean).join(', ');
+          cell.appendChild(partsLine);
+        }
+
+        const details = document.createElement('details');
+        details.className = 'raw';
+        const summary = document.createElement('summary');
+        summary.textContent = 'raw';
+        const pre = document.createElement('pre');
+        pre.textContent = JSON.stringify(raw, null, 1);
+        details.appendChild(summary);
+        details.appendChild(pre);
+        details.appendChild(copyButton(() => JSON.stringify(raw, null, 1)));
+        cell.appendChild(details);
       } else {
-        cell.innerHTML = `
-          <div class="stock-parts">Geen materieelveld gevonden in response.</div>
-          <details class="raw"><summary>raw response</summary><pre>${escapeHtml(JSON.stringify(raw, null, 1))}</pre></details>
-        `;
+        const none = document.createElement('div');
+        none.className = 'stock-parts';
+        none.textContent = 'Geen materieelveld gevonden in response.';
+        cell.appendChild(none);
+
+        const details = document.createElement('details');
+        details.className = 'raw';
+        const summary = document.createElement('summary');
+        summary.textContent = 'raw response';
+        const pre = document.createElement('pre');
+        pre.textContent = JSON.stringify(raw, null, 1);
+        details.appendChild(summary);
+        details.appendChild(pre);
+        details.appendChild(copyButton(() => JSON.stringify(raw, null, 1)));
+        cell.appendChild(details);
       }
     } catch(err){
       cell.innerHTML = `<span class="delay">${escapeHtml(err.message)}</span>`;
@@ -226,6 +326,8 @@ function escapeHtml(s){
   return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 
+let lastDeparturesRaw = null;
+
 async function load(){
   save();
   const station = getStationCode();
@@ -234,6 +336,8 @@ async function load(){
   setStatus('Ophalen…');
   try{
     const data = await nsFetch(`/api/v2/departures?station=${encodeURIComponent(station)}`);
+    lastDeparturesRaw = data;
+    $('copyDeparturesBtn').style.display = 'inline-block';
     const departures = data.payload?.departures || [];
     const tbody = $('tbody');
     tbody.innerHTML = '';
@@ -349,6 +453,18 @@ $('toggleKey').addEventListener('click', () => {
   const el = $('apiKey');
   el.type = el.type === 'password' ? 'text' : 'password';
   $('toggleKey').textContent = el.type === 'password' ? '👁' : '🙈';
+});
+
+$('copyDeparturesBtn').addEventListener('click', async () => {
+  if(!lastDeparturesRaw) return;
+  const btn = $('copyDeparturesBtn');
+  try {
+    await navigator.clipboard.writeText(JSON.stringify(lastDeparturesRaw, null, 1));
+    btn.textContent = 'Gekopieerd!';
+  } catch {
+    btn.textContent = 'Kopiëren mislukt';
+  }
+  setTimeout(() => btn.textContent = 'Kopieer JSON', 1500);
 });
 
 $('loadBtn').addEventListener('click', load);
