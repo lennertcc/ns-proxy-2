@@ -62,7 +62,6 @@
     <input id="apiKey" type="password" placeholder="NS API key (Ocp-Apim-Subscription-Key)" style="width:100%">
   </span>
   <button id="toggleKey" class="secondary" type="button">👁</button>
-  <input id="proxyUrl" type="text" placeholder="Proxy URL, bv. http://localhost:8787" style="width:220px">
   <span class="station-wrap">
     <input id="station" type="text" placeholder="Typ stationsnaam of code, bv. Utrecht / UT" autocomplete="off">
     <div id="stationDropdown"></div>
@@ -83,17 +82,13 @@
 
 <div class="note">
   API key opslaan gebeurt alleen lokaal in je browser (localStorage), verlaat dit bestand niet.<br>
-  NS geeft geen CORS-headers terug, dus directe browser-calls naar <code>gateway.apiportal.ns.nl</code>
-  falen ("Load failed" / "Failed to fetch"). Draai <code>python3 ns_proxy.py</code> ernaast en laat
-  "Proxy URL" op <code>http://localhost:8787</code> staan.
+  Calls lopen via de publieke CORS-proxy <code>corsproxy.io</code> (tijdelijk, i.p.v. eigen Cloudflare Worker) —
+  je API key gaat wel via die derde partij mee.
 </div>
 
 <script>
 const NS_GATEWAY = "https://gateway.apiportal.ns.nl/reisinformatie-api";
-function apiBase(){
-  const proxy = $('proxyUrl').value.trim().replace(/\/$/, '');
-  return proxy ? proxy + "/reisinformatie-api" : NS_GATEWAY;
-}
+function targetUrl(path){ return NS_GATEWAY + path; }
 let stationIndex = null; // code(lowercase) -> {uicCode, name}
 let autoTimer = null;
 
@@ -107,7 +102,6 @@ function setStatus(msg, isErr){
 
 function loadSaved(){
   $('apiKey').value = localStorage.getItem('ns_api_key') || '';
-  $('proxyUrl').value = localStorage.getItem('ns_proxy_url') ?? 'http://localhost:8787';
   const label = localStorage.getItem('ns_station_label') || '';
   const code = localStorage.getItem('ns_station_code') || '';
   $('station').value = label;
@@ -115,7 +109,6 @@ function loadSaved(){
 }
 function save(){
   localStorage.setItem('ns_api_key', $('apiKey').value.trim());
-  localStorage.setItem('ns_proxy_url', $('proxyUrl').value.trim());
   localStorage.setItem('ns_station_code', getStationCode());
   localStorage.setItem('ns_station_label', $('station').value.trim());
 }
@@ -129,7 +122,8 @@ function getStationCode(){
 async function nsFetch(path){
   const key = $('apiKey').value.trim();
   if(!key) throw new Error('Vul je NS API key in.');
-  const res = await fetch(apiBase() + path, {
+  const proxied = 'https://corsproxy.io/?url=' + encodeURIComponent(targetUrl(path));
+  const res = await fetch(proxied, {
     headers: { 'Ocp-Apim-Subscription-Key': key }
   });
   if(!res.ok){
