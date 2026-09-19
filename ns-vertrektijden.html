@@ -1,0 +1,392 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NS Vertrektijden + Materieel</title>
+<style>
+  :root{
+    --bg:#0f1115; --panel:#171a21; --border:#2a2e38; --text:#e8eaed;
+    --muted:#9aa0a8; --accent:#ffc917; --accent-text:#111; --ok:#3ecf6e; --err:#ff5c5c;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;
+       background:var(--bg);color:var(--text);padding:20px;}
+  h1{font-size:18px;margin:0 0 16px;}
+  .row{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;}
+  input{background:#20242e;border:1px solid var(--border);color:var(--text);
+        padding:8px 10px;border-radius:6px;font-size:14px;}
+  input#apiKey{flex:1;min-width:220px;}
+  input#station{width:220px;text-transform:none;}
+  .station-wrap{position:relative;}
+  #stationDropdown{
+    position:absolute;top:100%;left:0;right:0;margin-top:2px;
+    background:#20242e;border:1px solid var(--border);border-radius:6px;
+    max-height:260px;overflow-y:auto;z-index:20;display:none;
+  }
+  #stationDropdown div.opt{padding:7px 10px;font-size:13px;cursor:pointer;}
+  #stationDropdown div.opt b{color:var(--accent);font-weight:600;}
+  #stationDropdown div.opt.active{background:#2a2e38;}
+  #stationDropdown div.empty{padding:7px 10px;font-size:12px;color:var(--muted);cursor:default;}
+  button{background:var(--accent);color:var(--accent-text);border:none;border-radius:6px;
+         padding:8px 14px;font-size:14px;font-weight:600;cursor:pointer;}
+  button.secondary{background:#2a2e38;color:var(--text);}
+  button:disabled{opacity:.5;cursor:default;}
+  #status{color:var(--muted);font-size:13px;margin-bottom:12px;min-height:16px;}
+  #status.err{color:var(--err);}
+  table{width:100%;border-collapse:collapse;font-size:14px;}
+  th,td{text-align:left;padding:8px 6px;border-bottom:1px solid var(--border);}
+  th{color:var(--muted);font-weight:600;font-size:12px;text-transform:uppercase;}
+  tr.cancelled td{opacity:.4;text-decoration:line-through;}
+  .delay{color:var(--err);font-weight:600;}
+  .cat{display:inline-block;background:#2a2e38;padding:2px 6px;border-radius:4px;font-size:12px;}
+  .stock-cell{max-width:340px;}
+  .stock-line{font-size:13px;}
+  .stock-parts{color:var(--muted);font-size:12px;}
+  details.raw{margin-top:4px;}
+  details.raw summary{cursor:pointer;color:var(--muted);font-size:11px;}
+  pre{white-space:pre-wrap;font-size:11px;background:#0b0d11;padding:8px;border-radius:6px;max-height:200px;overflow:auto;}
+  .spin{display:inline-block;width:12px;height:12px;border:2px solid var(--muted);
+        border-top-color:var(--accent);border-radius:50%;animation:s .7s linear infinite;}
+  @keyframes s{to{transform:rotate(360deg)}}
+  .note{color:var(--muted);font-size:12px;margin-top:16px;line-height:1.5;}
+  a{color:var(--accent);}
+</style>
+</head>
+<body>
+
+<h1>NS Vertrektijden — met materieeltype</h1>
+
+<div class="row">
+  <span class="station-wrap" style="flex:1;min-width:220px;">
+    <input id="apiKey" type="password" placeholder="NS API key (Ocp-Apim-Subscription-Key)" style="width:100%">
+  </span>
+  <button id="toggleKey" class="secondary" type="button">👁</button>
+  <input id="proxyUrl" type="text" placeholder="Proxy URL, bv. http://localhost:8787" style="width:220px">
+  <span class="station-wrap">
+    <input id="station" type="text" placeholder="Typ stationsnaam of code, bv. Utrecht / UT" autocomplete="off">
+    <div id="stationDropdown"></div>
+  </span>
+  <button id="loadBtn">Ophalen</button>
+  <button id="autoBtn" class="secondary">Auto-refresh: uit</button>
+</div>
+<div id="status"></div>
+
+<table id="tbl" style="display:none">
+  <thead>
+    <tr>
+      <th>Tijd</th><th>Naar</th><th>Trein</th><th>Spoor</th><th>Status</th><th>Materieel</th>
+    </tr>
+  </thead>
+  <tbody id="tbody"></tbody>
+</table>
+
+<div class="note">
+  API key opslaan gebeurt alleen lokaal in je browser (localStorage), verlaat dit bestand niet.<br>
+  NS geeft geen CORS-headers terug, dus directe browser-calls naar <code>gateway.apiportal.ns.nl</code>
+  falen ("Load failed" / "Failed to fetch"). Draai <code>python3 ns_proxy.py</code> ernaast en laat
+  "Proxy URL" op <code>http://localhost:8787</code> staan.
+</div>
+
+<script>
+const NS_GATEWAY = "https://gateway.apiportal.ns.nl/reisinformatie-api";
+function apiBase(){
+  const proxy = $('proxyUrl').value.trim().replace(/\/$/, '');
+  return proxy ? proxy + "/reisinformatie-api" : NS_GATEWAY;
+}
+let stationIndex = null; // code(lowercase) -> {uicCode, name}
+let autoTimer = null;
+
+const $ = id => document.getElementById(id);
+const statusEl = $('status');
+
+function setStatus(msg, isErr){
+  statusEl.textContent = msg || '';
+  statusEl.className = isErr ? 'err' : '';
+}
+
+function loadSaved(){
+  $('apiKey').value = localStorage.getItem('ns_api_key') || '';
+  $('proxyUrl').value = localStorage.getItem('ns_proxy_url') ?? 'http://localhost:8787';
+  const label = localStorage.getItem('ns_station_label') || '';
+  const code = localStorage.getItem('ns_station_code') || '';
+  $('station').value = label;
+  $('station').dataset.code = code;
+}
+function save(){
+  localStorage.setItem('ns_api_key', $('apiKey').value.trim());
+  localStorage.setItem('ns_proxy_url', $('proxyUrl').value.trim());
+  localStorage.setItem('ns_station_code', getStationCode());
+  localStorage.setItem('ns_station_label', $('station').value.trim());
+}
+
+function getStationCode(){
+  const input = $('station');
+  if(input.dataset.code) return input.dataset.code;
+  return input.value.trim().toUpperCase();
+}
+
+async function nsFetch(path){
+  const key = $('apiKey').value.trim();
+  if(!key) throw new Error('Vul je NS API key in.');
+  const res = await fetch(apiBase() + path, {
+    headers: { 'Ocp-Apim-Subscription-Key': key }
+  });
+  if(!res.ok){
+    const body = await res.text().catch(()=> '');
+    throw new Error(`HTTP ${res.status} ${res.statusText} — ${body.slice(0,200)}`);
+  }
+  return res.json();
+}
+
+async function ensureStationIndex(){
+  if(stationIndex) return stationIndex;
+  const data = await nsFetch('/api/v2/stations');
+  const list = data.payload || data;
+  stationIndex = {};
+  for(const s of list){
+    const code = (s.code || '').toLowerCase();
+    if(code) stationIndex[code] = { uicCode: s.UICCode || s.uicCode, name: s.namen?.lang || s.name };
+  }
+  return stationIndex;
+}
+
+function fmtTime(iso){
+  if(!iso) return '—';
+  const d = new Date(iso);
+  return d.toLocaleTimeString('nl-NL', {hour:'2-digit', minute:'2-digit'});
+}
+
+// Walk an unknown response shape looking for rolling-stock info.
+// Returns {trainType, parts:[stockIdentifier...]} or null.
+function extractStock(obj, trainNumber){
+  let found = null;
+  function walk(node){
+    if(found || !node || typeof node !== 'object') return;
+    if(Array.isArray(node)){ node.forEach(walk); return; }
+    const keys = Object.keys(node);
+    for(const k of keys){
+      const lk = k.toLowerCase();
+      if((lk === 'actualstock' || lk === 'plannedstock' || lk === 'materieel') && node[k]){
+        const stock = node[k];
+        const trainType = stock.trainType || stock.type || stock.materieelType;
+        let parts = [];
+        const partsArr = stock.trainParts || stock.materieeldelen || stock.parts;
+        if(Array.isArray(partsArr)){
+          parts = partsArr.map(p => p.stockIdentifier || p.materieelnummer || p.identifier).filter(Boolean);
+        }
+        if(trainType || parts.length){
+          found = { trainType, parts };
+          return;
+        }
+      }
+    }
+    for(const k of keys) walk(node[k]);
+  }
+  walk(obj);
+  return found;
+}
+
+async function fetchStock(trainNumber, plannedDateTime, stationCode){
+  const idx = await ensureStationIndex();
+  const st = idx[stationCode.toLowerCase()];
+  if(!st || !st.uicCode) throw new Error('UIC-code van station niet gevonden');
+  const dt = encodeURIComponent(plannedDateTime);
+  const path = `/api/v3/trips?originUicCode=${st.uicCode}&trainNumber=${trainNumber}&dateTime=${dt}`;
+  const data = await nsFetch(path);
+  const stock = extractStock(data, trainNumber);
+  return { stock, raw: data };
+}
+
+function renderRow(dep){
+  const tr = document.createElement('tr');
+  if(dep.cancelled) tr.classList.add('cancelled');
+
+  const time = dep.actualDateTime || dep.plannedDateTime;
+  const delayed = dep.actualDateTime && dep.plannedDateTime &&
+                  new Date(dep.actualDateTime) - new Date(dep.plannedDateTime) > 60000;
+
+  const cat = dep.product?.shortCategoryName || dep.product?.longCategoryName || dep.trainCategory || '?';
+  const trainNumber = dep.product?.number || dep.name || '';
+
+  tr.innerHTML = `
+    <td>${fmtTime(time)}${delayed ? `<div class="delay">was ${fmtTime(dep.plannedDateTime)}</div>` : ''}</td>
+    <td>${dep.direction || ''}</td>
+    <td><span class="cat">${cat}</span> ${trainNumber}</td>
+    <td>${dep.plannedTrack || dep.actualTrack || '—'}</td>
+    <td>${dep.cancelled ? 'Geannuleerd' : (delayed ? 'Vertraagd' : 'Op tijd')}</td>
+    <td class="stock-cell"><button class="secondary stock-btn" data-num="${trainNumber}" data-dt="${dep.plannedDateTime}">Toon materieel</button></td>
+  `;
+
+  tr.querySelector('.stock-btn').addEventListener('click', async (e) => {
+    const btn = e.target;
+    const cell = btn.parentElement;
+    btn.disabled = true;
+    cell.innerHTML = '<span class="spin"></span>';
+    try {
+      const stationCode = getStationCode();
+      const { stock, raw } = await fetchStock(btn.dataset.num, btn.dataset.dt, stationCode);
+      if(stock){
+        cell.innerHTML = `
+          <div class="stock-line"><b>${stock.trainType || 'onbekend type'}</b></div>
+          <div class="stock-parts">${stock.parts.length ? 'bakken: ' + stock.parts.join(', ') : ''}</div>
+          <details class="raw"><summary>raw</summary><pre>${escapeHtml(JSON.stringify(raw, null, 1))}</pre></details>
+        `;
+      } else {
+        cell.innerHTML = `
+          <div class="stock-parts">Geen materieelveld gevonden in response.</div>
+          <details class="raw"><summary>raw response</summary><pre>${escapeHtml(JSON.stringify(raw, null, 1))}</pre></details>
+        `;
+      }
+    } catch(err){
+      cell.innerHTML = `<span class="delay">${escapeHtml(err.message)}</span>`;
+    }
+  });
+
+  return tr;
+}
+
+function escapeHtml(s){
+  return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+async function load(){
+  save();
+  const station = getStationCode();
+  if(!station){ setStatus('Vul een stationscode in.', true); return; }
+  $('loadBtn').disabled = true;
+  setStatus('Ophalen…');
+  try{
+    const data = await nsFetch(`/api/v3/departures?station=${encodeURIComponent(station)}`);
+    const departures = data.payload?.departures || [];
+    const tbody = $('tbody');
+    tbody.innerHTML = '';
+    departures.forEach(dep => tbody.appendChild(renderRow(dep)));
+    $('tbl').style.display = departures.length ? 'table' : 'none';
+    setStatus(`${departures.length} vertrekken — laatste update ${new Date().toLocaleTimeString('nl-NL')}`);
+  } catch(err){
+    setStatus(err.message, true);
+  } finally {
+    $('loadBtn').disabled = false;
+  }
+}
+
+// --- station autocomplete ---
+let stationList = null; // [{code, uicCode, name}]
+let ddActiveIndex = -1;
+const stationInput = $('station');
+const dropdown = $('stationDropdown');
+
+async function ensureStationList(){
+  if(stationList) return stationList;
+  const key = $('apiKey').value.trim();
+  if(!key) return null;
+  await ensureStationIndex(); // fills stationIndex code->{uicCode,name}
+  stationList = Object.entries(stationIndex).map(([code, v]) => ({
+    code: code.toUpperCase(), uicCode: v.uicCode, name: v.name || code.toUpperCase()
+  }));
+  return stationList;
+}
+
+function hideDropdown(){
+  dropdown.style.display = 'none';
+  dropdown.innerHTML = '';
+  ddActiveIndex = -1;
+}
+
+function highlight(text, q){
+  if(!q) return escapeHtml(text);
+  const i = text.toLowerCase().indexOf(q.toLowerCase());
+  if(i === -1) return escapeHtml(text);
+  return escapeHtml(text.slice(0,i)) + '<b>' + escapeHtml(text.slice(i,i+q.length)) + '</b>' + escapeHtml(text.slice(i+q.length));
+}
+
+function renderDropdown(matches, q){
+  if(!matches.length){
+    dropdown.innerHTML = '<div class="empty">Geen station gevonden</div>';
+    dropdown.style.display = 'block';
+    return;
+  }
+  dropdown.innerHTML = matches.map((s,i) =>
+    `<div class="opt" data-idx="${i}">${highlight(s.name, q)} <span style="color:var(--muted)">(${s.code})</span></div>`
+  ).join('');
+  dropdown.style.display = 'block';
+  [...dropdown.children].forEach(el => {
+    el.addEventListener('mousedown', (e) => { // mousedown fires before input blur
+      e.preventDefault();
+      selectStation(matches[+el.dataset.idx]);
+    });
+  });
+}
+
+function selectStation(s){
+  stationInput.value = s.name;
+  stationInput.dataset.code = s.code;
+  hideDropdown();
+  save();
+}
+
+let filterTimer = null;
+stationInput.addEventListener('input', () => {
+  delete stationInput.dataset.code; // typing invalidates a previous exact selection
+  const q = stationInput.value.trim();
+  clearTimeout(filterTimer);
+  if(!q){ hideDropdown(); return; }
+  filterTimer = setTimeout(async () => {
+    let list;
+    try {
+      list = await ensureStationList();
+    } catch(err){
+      dropdown.innerHTML = `<div class="empty">Fout bij ophalen stations: ${escapeHtml(err.message)}</div>`;
+      dropdown.style.display = 'block';
+      return;
+    }
+    if(!list){
+      dropdown.innerHTML = '<div class="empty">Vul eerst je API key in</div>';
+      dropdown.style.display = 'block';
+      return;
+    }
+    const ql = q.toLowerCase();
+    const matches = list
+      .filter(s => s.name.toLowerCase().includes(ql) || s.code.toLowerCase().includes(ql))
+      .sort((a,b) => a.name.length - b.name.length)
+      .slice(0, 8);
+    renderDropdown(matches, q);
+  }, 120);
+});
+
+stationInput.addEventListener('keydown', (e) => {
+  const opts = [...dropdown.children].filter(el => el.classList.contains('opt'));
+  if(!opts.length || dropdown.style.display === 'none') return;
+  if(e.key === 'ArrowDown'){ e.preventDefault(); ddActiveIndex = Math.min(ddActiveIndex+1, opts.length-1); }
+  else if(e.key === 'ArrowUp'){ e.preventDefault(); ddActiveIndex = Math.max(ddActiveIndex-1, 0); }
+  else if(e.key === 'Enter'){ e.preventDefault(); if(ddActiveIndex>=0) opts[ddActiveIndex].dispatchEvent(new Event('mousedown')); return; }
+  else if(e.key === 'Escape'){ hideDropdown(); return; }
+  else return;
+  opts.forEach(o => o.classList.remove('active'));
+  opts[ddActiveIndex].classList.add('active');
+});
+
+stationInput.addEventListener('blur', () => setTimeout(hideDropdown, 100));
+
+$('toggleKey').addEventListener('click', () => {
+  const el = $('apiKey');
+  el.type = el.type === 'password' ? 'text' : 'password';
+  $('toggleKey').textContent = el.type === 'password' ? '👁' : '🙈';
+});
+
+$('loadBtn').addEventListener('click', load);
+$('autoBtn').addEventListener('click', () => {
+  if(autoTimer){
+    clearInterval(autoTimer); autoTimer = null;
+    $('autoBtn').textContent = 'Auto-refresh: uit';
+  } else {
+    autoTimer = setInterval(load, 30000);
+    $('autoBtn').textContent = 'Auto-refresh: 30s';
+  }
+});
+
+loadSaved();
+</script>
+</body>
+</html>
