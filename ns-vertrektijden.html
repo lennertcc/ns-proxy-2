@@ -62,6 +62,7 @@
     <input id="apiKey" type="password" placeholder="NS API key (Ocp-Apim-Subscription-Key)" style="width:100%">
   </span>
   <button id="toggleKey" class="secondary" type="button">👁</button>
+  <input id="proxyUrl" type="text" placeholder="Proxy URL" style="width:220px">
   <span class="station-wrap">
     <input id="station" type="text" placeholder="Typ stationsnaam of code, bv. Utrecht / UT" autocomplete="off">
     <div id="stationDropdown"></div>
@@ -88,7 +89,10 @@
 
 <script>
 const NS_GATEWAY = "https://gateway.apiportal.ns.nl/reisinformatie-api";
-function targetUrl(path){ return NS_GATEWAY + path; }
+function apiBase(){
+  const proxy = $('proxyUrl').value.trim().replace(/\/$/, '');
+  return proxy ? proxy + "/reisinformatie-api" : NS_GATEWAY;
+}
 let stationIndex = null; // code(lowercase) -> {uicCode, name}
 let autoTimer = null;
 
@@ -122,8 +126,7 @@ function getStationCode(){
 async function nsFetch(path){
   const key = $('apiKey').value.trim();
   if(!key) throw new Error('Vul je NS API key in.');
-  const proxied = 'https://corsproxy.io/?url=' + encodeURIComponent(targetUrl(path));
-  const res = await fetch(proxied, {
+  const res = await fetch(apiBase() + path, {
     headers: { 'Ocp-Apim-Subscription-Key': key }
   });
   if(!res.ok){
