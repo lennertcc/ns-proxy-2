@@ -40,7 +40,15 @@
   tr.cancelled td{opacity:.4;text-decoration:line-through;}
   .delay{color:var(--err);font-weight:600;}
   .cat{display:inline-block;background:#2a2e38;padding:2px 6px;border-radius:4px;font-size:12px;}
-  .stock-cell{max-width:340px;}
+  .toggle-cell{width:28px;padding-right:0;}
+  .toggle-btn{background:none;border:none;color:var(--muted);font-size:14px;cursor:pointer;
+              padding:2px 6px;line-height:1;transition:transform .15s;}
+  .toggle-btn.open{transform:rotate(90deg);color:var(--accent);}
+  tr.main-row{cursor:pointer;}
+  tr.detail-row td{background:#171a21;padding:14px;border-bottom:1px solid var(--border);}
+  .detail-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;}
+  @media (max-width:520px){.detail-grid{grid-template-columns:1fr;}}
+  .detail-heading{font-size:14px;margin:0 0 6px;}
   .stock-line{font-size:13px;}
   .stock-parts{color:var(--muted);font-size:12px;}
   details.raw{margin-top:4px;}
@@ -56,7 +64,7 @@
 </head>
 <body>
 
-<h1>NS Vertrektijden — met materieeltype <span style="font-size:11px;color:var(--muted);font-weight:400;">v16 (treinposities-link gefixt)</span></h1>
+<h1>NS Vertrektijden — met materieeltype <span style="font-size:11px;color:var(--muted);font-weight:400;">v17 (uitklap-rij i.p.v. kolom)</span></h1>
 
 <div class="row">
   <span class="station-wrap" style="flex:1;min-width:220px;">
@@ -77,7 +85,7 @@
 <table id="tbl" style="display:none">
   <thead>
     <tr>
-      <th>Tijd</th><th>Naar</th><th>Trein</th><th>Spoor</th><th>Status</th><th>Materieel</th>
+      <th class="toggle-cell"></th><th>Tijd</th><th>Naar</th><th>Trein</th><th>Spoor</th><th>Status</th>
     </tr>
   </thead>
   <tbody id="tbody"></tbody>
@@ -296,8 +304,104 @@ async function fetchStock(trainNumber, plannedDateTime, stationCode){
   };
 }
 
+function buildDetailContent(stock, raw){
+  const wrap = document.createElement('div');
+
+  if(!stock){
+    const none = document.createElement('div');
+    none.className = 'stock-parts';
+    none.textContent = 'Geen materieelveld gevonden in response.';
+    wrap.appendChild(none);
+    wrap.appendChild(buildRawDetails(raw));
+    return wrap;
+  }
+
+  const grid = document.createElement('div');
+  grid.className = 'detail-grid';
+
+  // Linkerkolom: type, status, meta
+  const left = document.createElement('div');
+  const heading = document.createElement('h3');
+  heading.className = 'detail-heading';
+  heading.textContent = describeStockType(stock.trainType, stock.perUnitParts) || 'onbekend type';
+  left.appendChild(heading);
+
+  if(stock.couplingChange && stock.couplingChange.type !== 'none'){
+    const cc = stock.couplingChange;
+    const ccLine = document.createElement('div');
+    ccLine.style.color = 'var(--accent)';
+    ccLine.style.fontWeight = '600';
+    ccLine.style.fontSize = '13px';
+    ccLine.style.margin = '4px 0';
+    const label = {
+      coupled: `🔗 op dit station wordt een eenheid gekoppeld (${cc.from} → ${cc.to})`,
+      decoupled: `✂️ op dit station wordt een eenheid ontkoppeld (${cc.from} → ${cc.to})`,
+      swapped: `🔁 samenstelling wijzigt op dit station`
+    }[cc.type];
+    ccLine.textContent = label;
+    left.appendChild(ccLine);
+  }
+
+  if(stock.planVsActual){
+    const pva = stock.planVsActual;
+    const pvaLine = document.createElement('div');
+    pvaLine.style.color = 'var(--err)';
+    pvaLine.style.fontWeight = '600';
+    pvaLine.style.fontSize = '13px';
+    pvaLine.style.margin = '4px 0';
+    const plannedLabel = describeStockType(pva.plannedType, pva.plannedParts) || 'onbekend';
+    const actualLabel = describeStockType(pva.actualType, pva.actualParts) || 'onbekend';
+    pvaLine.textContent = `⚠ afwijkend van gepland: was ${plannedLabel}, nu ${actualLabel}`;
+    left.appendChild(pvaLine);
+  }
+
+  const meta = document.createElement('div');
+  meta.className = 'stock-parts';
+  meta.style.marginTop = '6px';
+  const bits = [];
+  if(stock.numberOfUnits > 1) bits.push(`${stock.numberOfUnits} eenheden gekoppeld`);
+  if(stock.numberOfParts) bits.push(`${stock.numberOfParts} bakken totaal`);
+  if(stock.numberOfSeats) bits.push(`${stock.numberOfSeats} zitplaatsen`);
+  if(stock.crowdForecast) bits.push(`drukte: ${describeCrowd(stock.crowdForecast)}`);
+  meta.textContent = bits.join(' · ');
+  left.appendChild(meta);
+  left.appendChild(buildRawDetails(raw));
+  grid.appendChild(left);
+
+  // Rechterkolom: eenheden met foto + faciliteiten
+  const right = document.createElement('div');
+  stock.parts.forEach((p, i) => {
+    const line = document.createElement('div');
+    line.style.marginBottom = '10px';
+    const facs = p.facilities.map(describeFacility).join(', ');
+    const label = stock.numberOfUnits > 1 ? `eenheid ${i+1}` : 'eenheid';
+    const num = p.stockIdentifier && p.stockIdentifier !== '0' ? p.stockIdentifier : null;
+    const thumb = p.image ? `<img src="${escapeHtml(p.image)}" alt="" style="display:block;max-width:100%;border-radius:4px;margin-bottom:4px;">` : '';
+    line.innerHTML = `${thumb}<span class="stock-parts">${label}${num ? ' — matnr. <a href="https://treinposities.nl/voertuig/ns_' + encodeURIComponent(num) + '" target="_blank" rel="noopener">' + escapeHtml(num) + '</a>' : ''}${facs ? ': ' + escapeHtml(facs) : ''}</span>`;
+    right.appendChild(line);
+  });
+  grid.appendChild(right);
+
+  wrap.appendChild(grid);
+  return wrap;
+}
+
+function buildRawDetails(raw){
+  const details = document.createElement('details');
+  details.className = 'raw';
+  const summary = document.createElement('summary');
+  summary.textContent = 'raw';
+  const pre = document.createElement('pre');
+  pre.textContent = JSON.stringify(raw, null, 1);
+  details.appendChild(summary);
+  details.appendChild(pre);
+  details.appendChild(copyButton(() => JSON.stringify(raw, null, 1)));
+  return details;
+}
+
 function renderRow(dep){
   const tr = document.createElement('tr');
+  tr.className = 'main-row';
   if(dep.cancelled) tr.classList.add('cancelled');
 
   const time = dep.actualDateTime || dep.plannedDateTime;
@@ -308,118 +412,50 @@ function renderRow(dep){
   const trainNumber = dep.product?.number || dep.name || '';
 
   tr.innerHTML = `
+    <td class="toggle-cell"><button class="toggle-btn" type="button" aria-label="Toon materieel">▶</button></td>
     <td>${fmtTime(time)}${delayed ? `<div class="delay">was ${fmtTime(dep.plannedDateTime)}</div>` : ''}</td>
     <td>${dep.direction || ''}</td>
     <td><span class="cat">${cat}</span> ${trainNumber}</td>
     <td>${dep.plannedTrack || dep.actualTrack || '—'}</td>
     <td>${dep.cancelled ? 'Geannuleerd' : (delayed ? 'Vertraagd' : 'Op tijd')}</td>
-    <td class="stock-cell"><button class="secondary stock-btn" data-num="${trainNumber}" data-dt="${dep.plannedDateTime}">Toon materieel</button></td>
   `;
 
-  tr.querySelector('.stock-btn').addEventListener('click', async (e) => {
-    const btn = e.target;
-    const cell = btn.parentElement;
-    btn.disabled = true;
-    cell.innerHTML = '<span class="spin"></span>';
+  const detailRow = document.createElement('tr');
+  detailRow.className = 'detail-row';
+  detailRow.style.display = 'none';
+  const detailCell = document.createElement('td');
+  detailCell.colSpan = 6;
+  detailRow.appendChild(detailCell);
+
+  const toggleBtn = tr.querySelector('.toggle-btn');
+  let loaded = false;
+
+  async function toggle(){
+    const isOpen = detailRow.style.display !== 'none';
+    if(isOpen){
+      detailRow.style.display = 'none';
+      toggleBtn.classList.remove('open');
+      return;
+    }
+    detailRow.style.display = '';
+    toggleBtn.classList.add('open');
+    if(loaded) return;
+    loaded = true;
+    detailCell.innerHTML = '<span class="spin"></span>';
     try {
       const stationCode = getStationCode();
-      const { stock, raw } = await fetchStock(btn.dataset.num, btn.dataset.dt, stationCode);
-      cell.innerHTML = '';
-      if(stock){
-        const typeLine = document.createElement('div');
-        typeLine.className = 'stock-line';
-        typeLine.innerHTML = `<b>${escapeHtml(describeStockType(stock.trainType, stock.perUnitParts) || 'onbekend type')}</b>`;
-        cell.appendChild(typeLine);
-
-        if(stock.couplingChange && stock.couplingChange.type !== 'none'){
-          const cc = stock.couplingChange;
-          const ccLine = document.createElement('div');
-          ccLine.style.color = 'var(--accent)';
-          ccLine.style.fontWeight = '600';
-          ccLine.style.fontSize = '12px';
-          ccLine.style.margin = '2px 0';
-          const label = {
-            coupled: `🔗 op dit station wordt een eenheid gekoppeld (${cc.from} → ${cc.to})`,
-            decoupled: `✂️ op dit station wordt een eenheid ontkoppeld (${cc.from} → ${cc.to})`,
-            swapped: `🔁 samenstelling wijzigt op dit station`
-          }[cc.type];
-          ccLine.textContent = label;
-          cell.appendChild(ccLine);
-        }
-
-        if(stock.planVsActual){
-          const pva = stock.planVsActual;
-          const pvaLine = document.createElement('div');
-          pvaLine.style.color = 'var(--err)';
-          pvaLine.style.fontWeight = '600';
-          pvaLine.style.fontSize = '12px';
-          pvaLine.style.margin = '2px 0';
-          const plannedLabel = describeStockType(pva.plannedType, pva.plannedParts) || 'onbekend';
-          const actualLabel = describeStockType(pva.actualType, pva.actualParts) || 'onbekend';
-          pvaLine.textContent = `⚠ afwijkend van gepland: was ${plannedLabel}, nu ${actualLabel}`;
-          cell.appendChild(pvaLine);
-        }
-
-        const meta = document.createElement('div');
-        meta.className = 'stock-parts';
-        const bits = [];
-        if(stock.numberOfUnits > 1) bits.push(`${stock.numberOfUnits} eenheden gekoppeld`);
-        if(stock.numberOfParts) bits.push(`${stock.numberOfParts} bakken totaal`);
-        if(stock.numberOfSeats) bits.push(`${stock.numberOfSeats} zitplaatsen`);
-        if(stock.crowdForecast) bits.push(`drukte: ${describeCrowd(stock.crowdForecast)}`);
-        meta.textContent = bits.join(' · ');
-        cell.appendChild(meta);
-
-        if(stock.parts.length){
-          const partsWrap = document.createElement('div');
-          partsWrap.className = 'stock-parts';
-          partsWrap.style.marginTop = '4px';
-          stock.parts.forEach((p, i) => {
-            const line = document.createElement('div');
-            line.style.marginBottom = '4px';
-            const facs = p.facilities.map(describeFacility).join(', ');
-            const label = stock.numberOfUnits > 1 ? `eenheid ${i+1}` : 'eenheid';
-            const num = p.stockIdentifier && p.stockIdentifier !== '0' ? p.stockIdentifier : null;
-            const thumb = p.image ? `<img src="${escapeHtml(p.image)}" alt="" style="display:block;max-width:100%;border-radius:4px;margin-bottom:2px;">` : '';
-            line.innerHTML = `${thumb}${label}${num ? ' — matnr. <a href="https://treinposities.nl/voertuig/ns_' + encodeURIComponent(num) + '" target="_blank" rel="noopener">' + escapeHtml(num) + '</a>' : ''}${facs ? ': ' + escapeHtml(facs) : ''}`;
-            partsWrap.appendChild(line);
-          });
-          cell.appendChild(partsWrap);
-        }
-
-        const details = document.createElement('details');
-        details.className = 'raw';
-        const summary = document.createElement('summary');
-        summary.textContent = 'raw';
-        const pre = document.createElement('pre');
-        pre.textContent = JSON.stringify(raw, null, 1);
-        details.appendChild(summary);
-        details.appendChild(pre);
-        details.appendChild(copyButton(() => JSON.stringify(raw, null, 1)));
-        cell.appendChild(details);
-      } else {
-        const none = document.createElement('div');
-        none.className = 'stock-parts';
-        none.textContent = 'Geen materieelveld gevonden in response.';
-        cell.appendChild(none);
-
-        const details = document.createElement('details');
-        details.className = 'raw';
-        const summary = document.createElement('summary');
-        summary.textContent = 'raw response';
-        const pre = document.createElement('pre');
-        pre.textContent = JSON.stringify(raw, null, 1);
-        details.appendChild(summary);
-        details.appendChild(pre);
-        details.appendChild(copyButton(() => JSON.stringify(raw, null, 1)));
-        cell.appendChild(details);
-      }
+      const { stock, raw } = await fetchStock(trainNumber, dep.plannedDateTime, stationCode);
+      detailCell.innerHTML = '';
+      detailCell.appendChild(buildDetailContent(stock, raw));
     } catch(err){
-      cell.innerHTML = `<span class="delay">${escapeHtml(err.message)}</span>`;
+      detailCell.innerHTML = `<span class="delay">${escapeHtml(err.message)}</span>`;
+      loaded = false; // laat opnieuw proberen bij volgende klik
     }
-  });
+  }
 
-  return tr;
+  tr.addEventListener('click', toggle);
+
+  return [tr, detailRow];
 }
 
 function escapeHtml(s){
@@ -441,7 +477,11 @@ async function load(){
     const departures = data.payload?.departures || [];
     const tbody = $('tbody');
     tbody.innerHTML = '';
-    departures.forEach(dep => tbody.appendChild(renderRow(dep)));
+    departures.forEach(dep => {
+      const [main, detail] = renderRow(dep);
+      tbody.appendChild(main);
+      tbody.appendChild(detail);
+    });
     $('tbl').style.display = departures.length ? 'table' : 'none';
     setStatus(`${departures.length} vertrekken — laatste update ${new Date().toLocaleTimeString('nl-NL')}`);
   } catch(err){
