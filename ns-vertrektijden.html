@@ -51,6 +51,8 @@
   .detail-heading{font-size:14px;margin:0 0 6px;}
   .stock-line{font-size:13px;}
   .stock-parts{color:var(--muted);font-size:12px;}
+  .train-img-scroll{overflow-x:auto;max-width:100%;margin-bottom:4px;}
+  .train-img{height:120px;width:auto;display:block;border-radius:4px;}
   details.raw{margin-top:4px;}
   details.raw summary{cursor:pointer;color:var(--muted);font-size:11px;}
   .copy-btn{font-size:11px;padding:3px 8px;margin-top:4px;}
@@ -64,7 +66,7 @@
 </head>
 <body>
 
-<h1>NS Vertrektijden — met materieeltype <span style="font-size:11px;color:var(--muted);font-weight:400;">v19 (wissel-knop Van/Naar)</span></h1>
+<h1>NS Vertrektijden — met materieeltype <span style="font-size:11px;color:var(--muted);font-weight:400;">v20 (grotere treinfoto + horizontale scroll)</span></h1>
 
 <div class="row">
   <span class="station-wrap" style="flex:1;min-width:220px;">
@@ -402,7 +404,7 @@ function buildDetailContent(stock, raw){
     const facs = p.facilities.map(describeFacility).join(', ');
     const label = stock.numberOfUnits > 1 ? `eenheid ${i+1}` : 'eenheid';
     const num = p.stockIdentifier && p.stockIdentifier !== '0' ? p.stockIdentifier : null;
-    const thumb = p.image ? `<img src="${escapeHtml(p.image)}" alt="" style="display:block;max-width:100%;border-radius:4px;margin-bottom:4px;">` : '';
+    const thumb = p.image ? `<div class="train-img-scroll"><img class="train-img" src="${escapeHtml(p.image)}" alt=""></div>` : '';
     line.innerHTML = `${thumb}<span class="stock-parts">${label}${num ? ' — matnr. <a href="https://treinposities.nl/voertuig/ns_' + encodeURIComponent(num) + '" target="_blank" rel="noopener">' + escapeHtml(num) + '</a>' : ''}${facs ? ': ' + escapeHtml(facs) : ''}</span>`;
     right.appendChild(line);
   });
