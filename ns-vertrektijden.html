@@ -19,15 +19,15 @@
   input#apiKey{flex:1;min-width:220px;}
   input#station{width:220px;text-transform:none;}
   .station-wrap{position:relative;}
-  #stationDropdown{
+  .ac-dropdown{
     position:absolute;top:100%;left:0;right:0;margin-top:2px;
     background:#20242e;border:1px solid var(--border);border-radius:6px;
     max-height:260px;overflow-y:auto;z-index:20;display:none;
   }
-  #stationDropdown div.opt{padding:7px 10px;font-size:13px;cursor:pointer;}
-  #stationDropdown div.opt b{color:var(--accent);font-weight:600;}
-  #stationDropdown div.opt.active{background:#2a2e38;}
-  #stationDropdown div.empty{padding:7px 10px;font-size:12px;color:var(--muted);cursor:default;}
+  .ac-dropdown div.opt{padding:7px 10px;font-size:13px;cursor:pointer;}
+  .ac-dropdown div.opt b{color:var(--accent);font-weight:600;}
+  .ac-dropdown div.opt.active{background:#2a2e38;}
+  .ac-dropdown div.empty{padding:7px 10px;font-size:12px;color:var(--muted);cursor:default;}
   button{background:var(--accent);color:var(--accent-text);border:none;border-radius:6px;
          padding:8px 14px;font-size:14px;font-weight:600;cursor:pointer;}
   button.secondary{background:#2a2e38;color:var(--text);}
@@ -64,7 +64,7 @@
 </head>
 <body>
 
-<h1>NS Vertrektijden — met materieeltype <span style="font-size:11px;color:var(--muted);font-weight:400;">v17 (uitklap-rij i.p.v. kolom)</span></h1>
+<h1>NS Vertrektijden — met materieeltype <span style="font-size:11px;color:var(--muted);font-weight:400;">v18 (Naar-veld: filtert op route, niet alleen eindbestemming)</span></h1>
 
 <div class="row">
   <span class="station-wrap" style="flex:1;min-width:220px;">
@@ -73,8 +73,12 @@
   <button id="toggleKey" class="secondary" type="button">👁</button>
   <input id="proxyUrl" type="text" placeholder="Proxy URL" style="width:220px">
   <span class="station-wrap">
-    <input id="station" type="text" placeholder="Typ stationsnaam of code, bv. Utrecht / UT" autocomplete="off">
-    <div id="stationDropdown"></div>
+    <input id="station" type="text" placeholder="Van: typ stationsnaam of code, bv. Utrecht / UT" autocomplete="off">
+    <div id="stationDropdown" class="ac-dropdown"></div>
+  </span>
+  <span class="station-wrap">
+    <input id="naarStation" type="text" placeholder="Naar (optioneel): via/eindstation" autocomplete="off">
+    <div id="naarDropdown" class="ac-dropdown"></div>
   </span>
   <button id="loadBtn">Ophalen</button>
   <button id="copyDeparturesBtn" class="secondary" type="button" style="display:none">Kopieer JSON</button>
@@ -121,16 +125,28 @@ function loadSaved(){
   const code = localStorage.getItem('ns_station_code') || '';
   $('station').value = label;
   $('station').dataset.code = code;
+  const naarLabel = localStorage.getItem('ns_naar_label') || '';
+  const naarCode = localStorage.getItem('ns_naar_code') || '';
+  $('naarStation').value = naarLabel;
+  $('naarStation').dataset.code = naarCode;
 }
 function save(){
   localStorage.setItem('ns_api_key', $('apiKey').value.trim());
   localStorage.setItem('ns_proxy_url', $('proxyUrl').value.trim());
   localStorage.setItem('ns_station_code', getStationCode());
   localStorage.setItem('ns_station_label', $('station').value.trim());
+  localStorage.setItem('ns_naar_code', getNaarCode());
+  localStorage.setItem('ns_naar_label', $('naarStation').value.trim());
 }
 
 function getStationCode(){
   const input = $('station');
+  if(input.dataset.code) return input.dataset.code;
+  return input.value.trim().toUpperCase();
+}
+
+function getNaarCode(){
+  const input = $('naarStation');
   if(input.dataset.code) return input.dataset.code;
   return input.value.trim().toUpperCase();
 }
@@ -236,10 +252,19 @@ function copyButton(getText){
   return btn;
 }
 
+const journeyCache = new Map(); // "trainNumber_date" -> journey response
+
+async function fetchJourney(trainNumber, plannedDateTime){
+  const date = plannedDateTime.slice(0,10);
+  const key = `${trainNumber}_${date}`;
+  if(journeyCache.has(key)) return journeyCache.get(key);
+  const data = await nsFetch(`/api/v2/journey?train=${encodeURIComponent(trainNumber)}&dateTime=${encodeURIComponent(date)}`);
+  journeyCache.set(key, data);
+  return data;
+}
+
 async function fetchStock(trainNumber, plannedDateTime, stationCode){
-  const dt = encodeURIComponent(plannedDateTime.slice(0,10));
-  const path = `/api/v2/journey?train=${encodeURIComponent(trainNumber)}&dateTime=${dt}`;
-  const data = await nsFetch(path);
+  const data = await fetchJourney(trainNumber, plannedDateTime);
   const stops = data.payload?.stops || [];
 
   let matchedStop = null;
@@ -399,6 +424,35 @@ function buildRawDetails(raw){
   return details;
 }
 
+async function passesViaStation(dep, departureUic, viaUic){
+  try {
+    const data = await fetchJourney(dep.product?.number || dep.name, dep.plannedDateTime);
+    const stops = data.payload?.stops || [];
+    const originIdx = stops.findIndex(s => s.stop?.uicCode === departureUic);
+    const searchFrom = originIdx >= 0 ? originIdx + 1 : 0;
+    return stops.slice(searchFrom).some(s => s.stop?.uicCode === viaUic);
+  } catch {
+    return false; // bij fout: niet meenemen i.p.v. de hele lijst laten breken
+  }
+}
+
+async function filterByVia(departures, departureUic, viaUic){
+  const results = new Array(departures.length);
+  const concurrency = 5;
+  let next = 0;
+  let done = 0;
+  async function worker(){
+    while(next < departures.length){
+      const i = next++;
+      results[i] = await passesViaStation(departures[i], departureUic, viaUic);
+      done++;
+      setStatus(`Filteren op tussenstation… (${done}/${departures.length})`);
+    }
+  }
+  await Promise.all(Array.from({length: Math.min(concurrency, departures.length)}, worker));
+  return departures.filter((_, i) => results[i]);
+}
+
 function renderRow(dep){
   const tr = document.createElement('tr');
   tr.className = 'main-row';
@@ -474,7 +528,22 @@ async function load(){
     const data = await nsFetch(`/api/v2/departures?station=${encodeURIComponent(station)}`);
     lastDeparturesRaw = data;
     $('copyDeparturesBtn').style.display = 'inline-block';
-    const departures = data.payload?.departures || [];
+    let departures = data.payload?.departures || [];
+
+    const naarCode = getNaarCode();
+    if(naarCode){
+      const idx = await ensureStationIndex();
+      const departureUic = idx[station.toLowerCase()]?.uicCode;
+      const viaUic = idx[naarCode.toLowerCase()]?.uicCode;
+      if(!viaUic){
+        setStatus(`Onbekend "Naar"-station: ${naarCode}`, true);
+        $('loadBtn').disabled = false;
+        return;
+      }
+      setStatus('Filteren op tussenstation…');
+      departures = await filterByVia(departures, departureUic, viaUic);
+    }
+
     const tbody = $('tbody');
     tbody.innerHTML = '';
     departures.forEach(dep => {
@@ -491,11 +560,8 @@ async function load(){
   }
 }
 
-// --- station autocomplete ---
+// --- station autocomplete (herbruikbaar voor Van en Naar) ---
 let stationList = null; // [{code, uicCode, name}]
-let ddActiveIndex = -1;
-const stationInput = $('station');
-const dropdown = $('stationDropdown');
 
 async function ensureStationList(){
   if(stationList) return stationList;
@@ -508,12 +574,6 @@ async function ensureStationList(){
   return stationList;
 }
 
-function hideDropdown(){
-  dropdown.style.display = 'none';
-  dropdown.innerHTML = '';
-  ddActiveIndex = -1;
-}
-
 function highlight(text, q){
   if(!q) return escapeHtml(text);
   const i = text.toLowerCase().indexOf(q.toLowerCase());
@@ -521,73 +581,86 @@ function highlight(text, q){
   return escapeHtml(text.slice(0,i)) + '<b>' + escapeHtml(text.slice(i,i+q.length)) + '</b>' + escapeHtml(text.slice(i+q.length));
 }
 
-function renderDropdown(matches, q){
-  if(!matches.length){
-    dropdown.innerHTML = '<div class="empty">Geen station gevonden</div>';
-    dropdown.style.display = 'block';
-    return;
+function setupStationAutocomplete(inputEl, dropdownEl){
+  let ddActiveIndex = -1;
+  let filterTimer = null;
+
+  function hideDropdown(){
+    dropdownEl.style.display = 'none';
+    dropdownEl.innerHTML = '';
+    ddActiveIndex = -1;
   }
-  dropdown.innerHTML = matches.map((s,i) =>
-    `<div class="opt" data-idx="${i}">${highlight(s.name, q)} <span style="color:var(--muted)">(${s.code})</span></div>`
-  ).join('');
-  dropdown.style.display = 'block';
-  [...dropdown.children].forEach(el => {
-    el.addEventListener('mousedown', (e) => { // mousedown fires before input blur
-      e.preventDefault();
-      selectStation(matches[+el.dataset.idx]);
+
+  function selectStation(s){
+    inputEl.value = s.name;
+    inputEl.dataset.code = s.code;
+    hideDropdown();
+    save();
+  }
+
+  function renderDropdown(matches, q){
+    if(!matches.length){
+      dropdownEl.innerHTML = '<div class="empty">Geen station gevonden</div>';
+      dropdownEl.style.display = 'block';
+      return;
+    }
+    dropdownEl.innerHTML = matches.map((s,i) =>
+      `<div class="opt" data-idx="${i}">${highlight(s.name, q)} <span style="color:var(--muted)">(${s.code})</span></div>`
+    ).join('');
+    dropdownEl.style.display = 'block';
+    [...dropdownEl.children].forEach(el => {
+      el.addEventListener('mousedown', (e) => { // mousedown fires before input blur
+        e.preventDefault();
+        selectStation(matches[+el.dataset.idx]);
+      });
     });
+  }
+
+  inputEl.addEventListener('input', () => {
+    delete inputEl.dataset.code; // typing invalidates a previous exact selection
+    const q = inputEl.value.trim();
+    clearTimeout(filterTimer);
+    if(!q){ hideDropdown(); return; }
+    filterTimer = setTimeout(async () => {
+      let list;
+      try {
+        list = await ensureStationList();
+      } catch(err){
+        dropdownEl.innerHTML = `<div class="empty">Fout bij ophalen stations: ${escapeHtml(err.message)}</div>`;
+        dropdownEl.style.display = 'block';
+        return;
+      }
+      if(!list){
+        dropdownEl.innerHTML = '<div class="empty">Vul eerst je API key in</div>';
+        dropdownEl.style.display = 'block';
+        return;
+      }
+      const ql = q.toLowerCase();
+      const matches = list
+        .filter(s => s.name.toLowerCase().includes(ql) || s.code.toLowerCase().includes(ql))
+        .sort((a,b) => a.name.length - b.name.length)
+        .slice(0, 8);
+      renderDropdown(matches, q);
+    }, 120);
   });
+
+  inputEl.addEventListener('keydown', (e) => {
+    const opts = [...dropdownEl.children].filter(el => el.classList.contains('opt'));
+    if(!opts.length || dropdownEl.style.display === 'none') return;
+    if(e.key === 'ArrowDown'){ e.preventDefault(); ddActiveIndex = Math.min(ddActiveIndex+1, opts.length-1); }
+    else if(e.key === 'ArrowUp'){ e.preventDefault(); ddActiveIndex = Math.max(ddActiveIndex-1, 0); }
+    else if(e.key === 'Enter'){ e.preventDefault(); if(ddActiveIndex>=0) opts[ddActiveIndex].dispatchEvent(new Event('mousedown')); return; }
+    else if(e.key === 'Escape'){ hideDropdown(); return; }
+    else return;
+    opts.forEach(o => o.classList.remove('active'));
+    opts[ddActiveIndex].classList.add('active');
+  });
+
+  inputEl.addEventListener('blur', () => setTimeout(hideDropdown, 100));
 }
 
-function selectStation(s){
-  stationInput.value = s.name;
-  stationInput.dataset.code = s.code;
-  hideDropdown();
-  save();
-}
-
-let filterTimer = null;
-stationInput.addEventListener('input', () => {
-  delete stationInput.dataset.code; // typing invalidates a previous exact selection
-  const q = stationInput.value.trim();
-  clearTimeout(filterTimer);
-  if(!q){ hideDropdown(); return; }
-  filterTimer = setTimeout(async () => {
-    let list;
-    try {
-      list = await ensureStationList();
-    } catch(err){
-      dropdown.innerHTML = `<div class="empty">Fout bij ophalen stations: ${escapeHtml(err.message)}</div>`;
-      dropdown.style.display = 'block';
-      return;
-    }
-    if(!list){
-      dropdown.innerHTML = '<div class="empty">Vul eerst je API key in</div>';
-      dropdown.style.display = 'block';
-      return;
-    }
-    const ql = q.toLowerCase();
-    const matches = list
-      .filter(s => s.name.toLowerCase().includes(ql) || s.code.toLowerCase().includes(ql))
-      .sort((a,b) => a.name.length - b.name.length)
-      .slice(0, 8);
-    renderDropdown(matches, q);
-  }, 120);
-});
-
-stationInput.addEventListener('keydown', (e) => {
-  const opts = [...dropdown.children].filter(el => el.classList.contains('opt'));
-  if(!opts.length || dropdown.style.display === 'none') return;
-  if(e.key === 'ArrowDown'){ e.preventDefault(); ddActiveIndex = Math.min(ddActiveIndex+1, opts.length-1); }
-  else if(e.key === 'ArrowUp'){ e.preventDefault(); ddActiveIndex = Math.max(ddActiveIndex-1, 0); }
-  else if(e.key === 'Enter'){ e.preventDefault(); if(ddActiveIndex>=0) opts[ddActiveIndex].dispatchEvent(new Event('mousedown')); return; }
-  else if(e.key === 'Escape'){ hideDropdown(); return; }
-  else return;
-  opts.forEach(o => o.classList.remove('active'));
-  opts[ddActiveIndex].classList.add('active');
-});
-
-stationInput.addEventListener('blur', () => setTimeout(hideDropdown, 100));
+setupStationAutocomplete($('station'), $('stationDropdown'));
+setupStationAutocomplete($('naarStation'), $('naarDropdown'));
 
 $('toggleKey').addEventListener('click', () => {
   const el = $('apiKey');
